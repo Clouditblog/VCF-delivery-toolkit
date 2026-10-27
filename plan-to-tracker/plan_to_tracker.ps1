@@ -551,7 +551,7 @@ function Get-StylesXml($sb) {
     $g = $script:GREY
     $x = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
     $x += '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
-    $x += '<numFmts count="2"><numFmt numFmtId="164" formatCode="dd/mm/yyyy"/><numFmt numFmtId="165" formatCode="dd/mm/yyyy hh:mm"/></numFmts>'
+    $x += '<numFmts count="3"><numFmt numFmtId="164" formatCode="dd/mm/yyyy"/><numFmt numFmtId="165" formatCode="dd/mm/yyyy hh:mm"/><numFmt numFmtId="166" formatCode="0.0"/></numFmts>'
     $x += '<fonts count="' + $sb.Fonts.Count + '">' + ($sb.Fonts -join '') + '</fonts>'
     $x += '<fills count="' + $sb.Fills.Count + '">' + ($sb.Fills -join '') + '</fills>'
     $x += '<borders count="2"><border><left/><right/><top/><bottom/><diagonal/></border>'
@@ -689,6 +689,25 @@ function Write-Zip([string]$path, $parts) {
     }
 }
 
+function Get-EstBasis([string]$kind, [string]$text, [string]$mode) {
+    # Picks which row of the Sizing tab an item's time estimate comes from. The user can change it per row.
+    $t = $text.ToLower()
+    if ($kind -eq 'Checkpoint') {
+        if ($mode -eq 'procedure') { return 'Quick check' }
+        return 'Health checkpoint'
+    }
+    if ($kind -eq 'Pre-check') { return 'Preparation task' }
+    if ($t -match '^(download|upload)\b') { return 'Download or upload' }
+    if ($mode -eq 'procedure') { return 'Config step' }
+    if ($t -match 'esx' -and $t -match 'upgrade|remediat|update') { return 'ESX host upgrade' }
+    if ($t -match 'vcenter' -and $t -match 'upgrade|update') { return 'vCenter upgrade' }
+    if ($t -match 'edge' -and $t -match 'upgrade|update') { return 'NSX Edge upgrade' }
+    if ($t -match 'nsx' -and $t -match 'upgrade|update') { return 'NSX Manager upgrade' }
+    if ($t -match '^(deploy|install)\b') { return 'Appliance deploy' }
+    if ($t -match '^(upgrade|update|patch)\b') { return 'Appliance upgrade' }
+    return 'Config step'
+}
+
 function Build-Workbook([string]$title, $phases, [string]$sourceName, [string]$outPath, [string]$mode = 'plan') {
     $st = New-StyleBook
     $lcTitle = $title.ToLower()
@@ -708,6 +727,32 @@ function Build-Workbook([string]$title, $phases, [string]$sourceName, [string]$o
 
     $tok = @{ '[F]' = $FIRST; '[L]' = $LAST; '[I]' = $ISS_LAST; '[T]' = $T }
 
+    # Tracker columns: A Ref, B Type, C Item, D Est, E Owner, F Planned, G Status, H RAG, I Actual start, J Actual end,
+    # K Actual hrs, L Notes, M Plan reference, N Estimate basis
+    $NCOL = 14
+
+    # Time-estimate rules. Hours are starting values, not measured timings; the user replaces them on the Sizing tab.
+    $unitsDefault = @(1, 4, 1, 1, 2)
+    $rules = @(
+        @{ N = 'Quick check';         V = @(0.25, 0, 0, 0, 0);     C = 'Read-only checks and confirmations' },
+        @{ N = 'Preparation task';    V = @(0.5, 0, 0, 0, 0);      C = 'Pre-checks: DNS, IP addresses, access, capacity' },
+        @{ N = 'Config step';         V = @(0.5, 0, 0, 0, 0);      C = 'Settings and console steps' },
+        @{ N = 'Download or upload';  V = @(1, 0, 0, 0, 0);        C = 'Large downloads, depot and PAK uploads' },
+        @{ N = 'Appliance deploy';    V = @(2, 0, 0, 0, 0);        C = 'OVA deployment and first configuration' },
+        @{ N = 'Appliance upgrade';   V = @(2, 0, 0, 0, 0);        C = 'PAK or bundle upgrade of an appliance' },
+        @{ N = 'vCenter upgrade';     V = @(0.5, 0, 0, 2.5, 0);    C = 'Per vCenter Server' },
+        @{ N = 'NSX Manager upgrade'; V = @(3, 0, 0, 0, 0);        C = 'NSX Manager cluster' },
+        @{ N = 'NSX Edge upgrade';    V = @(0.5, 0, 0, 0, 0.75);   C = 'Per Edge node' },
+        @{ N = 'ESX host upgrade';    V = @(0.5, 0.75, 0.25, 0, 0); C = 'One host at a time, including evacuation' },
+        @{ N = 'Health checkpoint';   V = @(0.5, 0, 0, 0, 0);      C = 'Validate health, safe stopping point' }
+    )
+    $ruleHours = @{}
+    foreach ($ru in $rules) {
+        $h = 0.0
+        for ($u = 0; $u -lt 5; $u++) { $h += [double]$ru.V[$u] * [double]$unitsDefault[$u] }
+        $ruleHours[$ru.N] = [math]::Round($h, 2)
+    }
+
     $dGreen = Add-Dxf $st 'FFFFFF' $false '00B050'
     $dAmber = Add-Dxf $st '000000' $false 'FFC000'
     $dRed   = Add-Dxf $st 'FFFFFF' $false 'FF0000'
@@ -721,6 +766,7 @@ function Build-Workbook([string]$title, $phases, [string]$sourceName, [string]$o
 
     $dash = New-Sheet 'Dashboard'
     $trk  = New-Sheet $tracker
+    $siz  = New-Sheet 'Sizing'
     $iss  = New-Sheet 'Issues Log'
     $dash.Grid = $false
 
@@ -742,10 +788,10 @@ function Build-Workbook([string]$title, $phases, [string]$sourceName, [string]$o
         Put-Cell $ws $r 3 $null (Get-StyleId $st -fill $INPUT -border $true -h 'left' -nf $nfx)
     }
     $summary = @(
-        @(4,  'Green', 'COUNTIF($G$[F]:$G$[L],"Green")', '00B050', 'FFFFFF', 0),
-        @(5,  'Amber', 'COUNTIF($G$[F]:$G$[L],"Amber")', 'FFC000', $null, 0),
-        @(6,  'Red',   'COUNTIF($G$[F]:$G$[L],"Red")', 'FF0000', 'FFFFFF', 0),
-        @(7,  'Items complete (excl. step rows)', 'COUNTIF($F$[F]:$F$[L],"Complete")-COUNTIFS($B$[F]:$B$[L],"Step",$F$[F]:$F$[L],"Complete")', $null, $null, 0),
+        @(4,  'Green', 'COUNTIF($H$[F]:$H$[L],"Green")', '00B050', 'FFFFFF', 0),
+        @(5,  'Amber', 'COUNTIF($H$[F]:$H$[L],"Amber")', 'FFC000', $null, 0),
+        @(6,  'Red',   'COUNTIF($H$[F]:$H$[L],"Red")', 'FF0000', 'FFFFFF', 0),
+        @(7,  'Items complete (excl. step rows)', 'COUNTIF($G$[F]:$G$[L],"Complete")-COUNTIFS($B$[F]:$B$[L],"Step",$G$[F]:$G$[L],"Complete")', $null, $null, 0),
         @(8,  'Items total (excl. step rows)', 'COUNTA($C$[F]:$C$[L])-COUNTIF($B$[F]:$B$[L],"Step")', $null, $null, $itemsTotal),
         @(9,  'Percent complete', 'IF(J8=0,0,J7/J8)', $null, $null, 0),
         @(10, 'Open issues', 'COUNTIF(''Issues Log''!$H$5:$H$[I],"Open")', $null, $null, 0)
@@ -761,66 +807,95 @@ function Build-Workbook([string]$title, $phases, [string]$sourceName, [string]$o
         Put-Cell $ws $r 10 (Sub-Tok $row[2] $tok) (Get-StyleId $st -b $true -border $true -h 'left' -nf $nfx) 'f' $row[5]
     }
     [void]$ws.Merges.Add('A10:F10')
-    Put-Cell $ws 10 1 'Yellow cells are for you to fill in. Pick Status and RAG from the dropdowns. Green = on plan, Amber = issue being managed, Red = blocked or needs a decision. Log each issue in the Issues Log tab using the item Ref.' (Get-StyleId $st -i $true -color '595959' -wrap $true -v 'top')
-    $ws.RowH[10] = 54
-    $heads = @('Ref', 'Type', 'Item', 'Owner', 'Planned date', 'Status', 'RAG', 'Actual start', 'Actual end', 'Notes / issues observed', 'Plan reference')
+    Put-Cell $ws 10 1 'Yellow cells are for you to fill in. Pick Status and RAG from the dropdowns. Green = on plan, Amber = issue being managed, Red = blocked or needs a decision. Log each issue in the Issues Log tab using the item Ref. Est. (hrs) is worked out from the Sizing tab; type over it to override. Actual (hrs) comes from the actual start and end.' (Get-StyleId $st -i $true -color '595959' -wrap $true -v 'top')
+    $ws.RowH[10] = 66
+    $heads = @('Ref', 'Type', 'Item', 'Est. (hrs)', 'Owner', 'Planned date', 'Status', 'RAG', 'Actual start', 'Actual end', 'Actual (hrs)', 'Notes / issues observed', 'Plan reference', 'Estimate basis')
     for ($c = 1; $c -le $heads.Count; $c++) {
         Put-Cell $ws 11 $c $heads[$c - 1] (Get-StyleId $st -b $true -color 'FFFFFF' -fill $NAVY -border $true -h 'center' -v 'center' -wrap $true)
     }
     $ws.RowH[11] = 24
-    $ctr = @(1, 2, 5, 6, 7, 8, 9)
+    $ctr = @(1, 2, 4, 6, 7, 8, 9, 10, 11)
+    $fEst = 'IF($N[r]="","",IFERROR(SUMPRODUCT(INDEX(Sizing!$B$14:$F$25,MATCH($N[r],Sizing!$A$14:$A$25,0),0),Sizing!$B$13:$F$13),"?"))'
+    $fAct = 'IF(AND(ISNUMBER(I[r]),ISNUMBER(J[r]),J[r]>=I[r]),ROUND((J[r]-I[r])*24,2),"")'
 
+    $phEst = New-Object System.Collections.ArrayList
     $r = $FIRST
     for ($pi = 1; $pi -le $phases.Count; $pi++) {
         $ph = $phases[$pi - 1]
-        $vals = @{ 1 = ('S' + $pi); 2 = 'Step'; 3 = ('Phase ' + $pi + ': ' + $ph.Name); 6 = 'Not started' }
-        for ($c = 1; $c -le 11; $c++) {
-            $fillc = $STEP_B; if ($c -in 1, 2, 3, 11) { $fillc = $STEP_A }
-            $hh = ''; if ($c -in 1, 2, 6) { $hh = 'center' }
+        $vals = @{ 1 = ('S' + $pi); 2 = 'Step'; 3 = ('Phase ' + $pi + ': ' + $ph.Name); 7 = 'Not started' }
+        for ($c = 1; $c -le $NCOL; $c++) {
+            $fillc = $STEP_B; if ($c -in 1, 2, 3, 13) { $fillc = $STEP_A }
+            $hh = ''; if ($c -in 1, 2, 7) { $hh = 'center' }
             $sid = Get-StyleId $st -b $true -fill $fillc -border $true -h $hh -v 'center' -wrap $true
             Put-Cell $ws $r $c $vals[$c] $sid
         }
         $ws.RowH[$r] = 15
         $r++
+        $sumEst = 0.0
         for ($ii = 1; $ii -le $ph.Items.Count; $ii++) {
             $it = $ph.Items[$ii - 1]
-            $vals = @{ 1 = ([string]$pi + '.' + $ii); 2 = $it.Kind; 3 = $it.Text; 6 = 'Not started'; 11 = $it.Note }
-            for ($c = 1; $c -le 11; $c++) {
-                $nfx = 0; if ($c -eq 5) { $nfx = 164 } elseif ($c -in 8, 9) { $nfx = 165 }
-                $fillc = $null; if ($c -in 4, 5, 6, 7, 8, 9, 10) { $fillc = $INPUT }
+            $basis = Get-EstBasis $it.Kind $it.Text $mode
+            $cachedEst = $ruleHours[$basis]
+            $sumEst += [double]$cachedEst
+            $rm = @{ '[r]' = $r }
+            for ($c = 1; $c -le $NCOL; $c++) {
+                $nfx = 0
+                if ($c -eq 6) { $nfx = 164 } elseif ($c -in 9, 10) { $nfx = 165 } elseif ($c -in 4, 11) { $nfx = 166 }
+                $fillc = $null; if ($c -in 4, 5, 6, 7, 8, 9, 10, 12, 14) { $fillc = $INPUT }
                 $hh = ''; if ($ctr -contains $c) { $hh = 'center' }
                 $sid = Get-StyleId $st -fill $fillc -border $true -nf $nfx -h $hh -v 'center' -wrap $true
-                Put-Cell $ws $r $c $vals[$c] $sid
+                if ($c -eq 1) { Put-Cell $ws $r $c ([string]$pi + '.' + $ii) $sid }
+                elseif ($c -eq 2) { Put-Cell $ws $r $c $it.Kind $sid }
+                elseif ($c -eq 3) { Put-Cell $ws $r $c $it.Text $sid }
+                elseif ($c -eq 4) { Put-Cell $ws $r $c (Sub-Tok $fEst $rm) $sid 'f' $cachedEst }
+                elseif ($c -eq 7) { Put-Cell $ws $r $c 'Not started' $sid }
+                elseif ($c -eq 11) { Put-Cell $ws $r $c (Sub-Tok $fAct $rm) $sid 'f' '' 's' }
+                elseif ($c -eq 12) { Put-Cell $ws $r $c $null $sid }
+                elseif ($c -eq 13) { Put-Cell $ws $r $c $it.Note $sid }
+                elseif ($c -eq 14) { Put-Cell $ws $r $c $basis $sid }
+                else { Put-Cell $ws $r $c $null $sid }
             }
             $ws.RowH[$r] = [math]::Max([double](Est-Height $it.Text 75), [double](Est-Height $it.Note 36))
             $r++
         }
+        [void]$phEst.Add([math]::Round($sumEst, 2))
     }
     for ($rr = $r; $rr -le $LAST; $rr++) {
-        for ($c = 1; $c -le 11; $c++) {
-            $nfx = 0; if ($c -eq 5) { $nfx = 164 } elseif ($c -in 8, 9) { $nfx = 165 }
+        $rm = @{ '[r]' = $rr }
+        for ($c = 1; $c -le $NCOL; $c++) {
+            $nfx = 0
+            if ($c -eq 6) { $nfx = 164 } elseif ($c -in 9, 10) { $nfx = 165 } elseif ($c -in 4, 11) { $nfx = 166 }
             $hh = ''; if ($ctr -contains $c) { $hh = 'center' }
-            Put-Cell $ws $rr $c $null (Get-StyleId $st -fill $INPUT -border $true -nf $nfx -h $hh -v 'center' -wrap $true)
+            $sid = Get-StyleId $st -fill $INPUT -border $true -nf $nfx -h $hh -v 'center' -wrap $true
+            if ($c -eq 11) { Put-Cell $ws $rr $c (Sub-Tok $fAct $rm) $sid 'f' '' 's' }
+            else { Put-Cell $ws $rr $c $null $sid }
         }
     }
-    foreach ($cd in @(@(1,1,7), @(2,2,16), @(3,3,70), @(4,4,14), @(5,5,13), @(6,6,14), @(7,7,10), @(8,9,15), @(10,10,55), @(11,11,36))) { [void]$ws.Cols.Add($cd) }
+    foreach ($cd in @(@(1,1,7), @(2,2,16), @(3,3,70), @(4,4,10), @(5,5,14), @(6,6,13), @(7,7,14), @(8,8,10), @(9,10,15), @(11,11,11), @(12,12,55), @(13,13,36), @(14,14,22))) { [void]$ws.Cols.Add($cd) }
     $ws.Freeze = @(3, 11)
-    [void]$ws.Dv.Add(@(('F' + $FIRST + ':F' + $LAST), '"Not started,In progress,Complete,Blocked,Rolled back"'))
-    [void]$ws.Dv.Add(@(('G' + $FIRST + ':G' + $LAST), '"Green,Amber,Red"'))
-    Add-Cf $ws ('F' + $FIRST + ':F' + $LAST) @( @('equal', '"Complete"', $dComplete), @('equal', '"Blocked"', $dBlocked), @('equal', '"Rolled back"', $dBlocked) )
-    Add-Cf $ws ('G' + $FIRST + ':G' + $LAST) $rag
+    [void]$ws.Dv.Add(@(('G' + $FIRST + ':G' + $LAST), '"Not started,In progress,Complete,Blocked,Rolled back"'))
+    [void]$ws.Dv.Add(@(('H' + $FIRST + ':H' + $LAST), '"Green,Amber,Red"'))
+    [void]$ws.Dv.Add(@(('N' + $FIRST + ':N' + $LAST), 'Sizing!$A$14:$A$25'))
+    Add-Cf $ws ('G' + $FIRST + ':G' + $LAST) @( @('equal', '"Complete"', $dComplete), @('equal', '"Blocked"', $dBlocked), @('equal', '"Rolled back"', $dBlocked) )
+    Add-Cf $ws ('H' + $FIRST + ':H' + $LAST) $rag
 
     # ------------------------------------------------------------ Dashboard
     $ws = $dash
+    $totalEst = 0.0
+    foreach ($e in $phEst) { $totalEst += [double]$e }
+    $totalEst = [math]::Round($totalEst, 2)
+    $lastRow = 8 + $phases.Count
+    $totRow = $lastRow + 1
     Put-Cell $ws 1 1 ($title + ': Status at a glance') (Get-StyleId $st -sz 16 -b $true)
     $ws.RowH[1] = 20.65
-    Put-Cell $ws 2 1 ('Updates itself from the ' + $tracker + ' and Issues Log tabs. Nothing to type on this page.') (Get-StyleId $st -i $true -color '595959')
+    Put-Cell $ws 2 1 ('Updates itself from the ' + $tracker + ', Sizing and Issues Log tabs. Nothing to type on this page.') (Get-StyleId $st -i $true -color '595959')
     $tiles = @(
-        @(1, 2,  'Overall complete', ($T + '!J9'),  9, 0),
-        @(3, 4,  'Items done',       ($T + '!J7'),  0, 0),
-        @(5, 6,  'Items total',      ($T + '!J8'),  0, $itemsTotal),
-        @(7, 8,  'Open issues',      ($T + '!J10'), 0, 0),
-        @(9, 10, 'Red items',        ($T + '!J6'),  0, 0)
+        @(1, 2,   'Overall complete', ($T + '!J9'),  9, 0),
+        @(3, 4,   'Items done',       ($T + '!J7'),  0, 0),
+        @(5, 6,   'Items total',      ($T + '!J8'),  0, $itemsTotal),
+        @(7, 8,   'Open issues',      ($T + '!J10'), 0, 0),
+        @(9, 10,  'Red items',        ($T + '!J6'),  0, 0),
+        @(11, 12, 'Est. hours left',  ('L' + $totRow), 166, $totalEst)
     )
     foreach ($tile in $tiles) {
         $a = [int]$tile[0]; $b = [int]$tile[1]
@@ -836,28 +911,34 @@ function Build-Workbook([string]$title, $phases, [string]$sourceName, [string]$o
     $ws.RowH[5] = 33.75
     Add-Cf $ws 'G5' @( ,@('greaterThan', '0', $dAmberBig) )
     Add-Cf $ws 'I5' @( ,@('greaterThan', '0', $dRedBig) )
-    $dh = @('#', 'Phase', 'Status', 'RAG', 'Done', 'Total', '% done', 'Progress', 'Remaining')
+    $dh = @('#', 'Phase', 'Status', 'RAG', 'Done', 'Total', '% done', 'Progress', 'Remaining', 'Est. hrs', 'Actual hrs', 'Hrs left')
     for ($c = 1; $c -le $dh.Count; $c++) {
         Put-Cell $ws 8 $c $dh[$c - 1] (Get-StyleId $st -b $true -color 'FFFFFF' -fill $NAVY -border $true -h 'center' -v 'center')
     }
     $ws.RowH[8] = 19.5
     $colA = $T + '!$A$' + $FIRST + ':$A$' + $LAST
-    $colF = $T + '!$F$' + $FIRST + ':$F$' + $LAST
-    $colG = $T + '!$G$' + $FIRST + ':$G$' + $LAST
     $colB = $T + '!$B$' + $FIRST + ':$B$' + $LAST
-    $fStatus = 'IF(COUNTIFS([A],$A[r]&".*",[Fc],"Blocked")+COUNTIFS([A],$A[r]&".*",[Fc],"Rolled back")>0,"Blocked",IF(E[r]=F[r],"Complete",IF(OR(E[r]>0,COUNTIFS([A],$A[r]&".*",[Fc],"In progress")>0),"In progress","Not started")))'
-    $fRag    = 'IF(OR(C[r]="Blocked",COUNTIFS([A],$A[r]&".*",[Gc],"Red")>0),"Red",IF(COUNTIFS([A],$A[r]&".*",[Gc],"Amber")>0,"Amber",IF(C[r]="Not started","","Green")))'
-    $fDone   = 'COUNTIFS([A],$A[r]&".*",[Fc],"Complete")'
-    $fTotal  = 'COUNTIFS([A],$A[r]&".*",[Bc],"<>Step")'
+    $colE = $T + '!$D$' + $FIRST + ':$D$' + $LAST
+    $colS = $T + '!$G$' + $FIRST + ':$G$' + $LAST
+    $colR = $T + '!$H$' + $FIRST + ':$H$' + $LAST
+    $colK = $T + '!$K$' + $FIRST + ':$K$' + $LAST
+    $fStatus = 'IF(COUNTIFS([A],$A[r]&".*",[S],"Blocked")+COUNTIFS([A],$A[r]&".*",[S],"Rolled back")>0,"Blocked",IF(E[r]=F[r],"Complete",IF(OR(E[r]>0,COUNTIFS([A],$A[r]&".*",[S],"In progress")>0),"In progress","Not started")))'
+    $fRag    = 'IF(OR(C[r]="Blocked",COUNTIFS([A],$A[r]&".*",[Rg],"Red")>0),"Red",IF(COUNTIFS([A],$A[r]&".*",[Rg],"Amber")>0,"Amber",IF(C[r]="Not started","","Green")))'
+    $fDone   = 'COUNTIFS([A],$A[r]&".*",[S],"Complete")'
+    $fTotal  = 'COUNTIFS([A],$A[r]&".*",[B],"<>Step")'
     $fBar    = 'REPT("' + $blk + '",ROUND(G[r]*20,0))&REPT("' + $lgt + '",20-ROUND(G[r]*20,0))'
+    $fEstP   = 'SUMIFS([E],[A],$A[r]&".*",[B],"<>Step")'
+    $fActP   = 'SUMIFS([K],[A],$A[r]&".*",[B],"<>Step")'
+    $fLeftP  = 'SUMIFS([E],[A],$A[r]&".*",[B],"<>Step",[S],"<>Complete")'
     $barCached = $lgt * 20
     for ($i = 1; $i -le $phases.Count; $i++) {
         $ph = $phases[$i - 1]
         $r = 8 + $i
-        $m = @{ '[A]' = $colA; '[Fc]' = $colF; '[Gc]' = $colG; '[Bc]' = $colB; '[r]' = $r }
+        $m = @{ '[A]' = $colA; '[B]' = $colB; '[E]' = $colE; '[S]' = $colS; '[Rg]' = $colR; '[K]' = $colK; '[r]' = $r }
         $ws.RowH[$r] = 19.5
         $nItems = $ph.Items.Count
         $base = Get-StyleId $st -border $true -h 'center' -v 'center'
+        $hrsStyle = Get-StyleId $st -border $true -h 'center' -v 'center' -nf 166
         Put-Cell $ws $r 1 $i $base 'n'
         Put-Cell $ws $r 2 $ph.Name (Get-StyleId $st -border $true -h 'left' -v 'center')
         Put-Cell $ws $r 3 (Sub-Tok $fStatus $m) $base 'f' 'Not started' 's'
@@ -867,12 +948,69 @@ function Build-Workbook([string]$title, $phases, [string]$sourceName, [string]$o
         Put-Cell $ws $r 7 (Sub-Tok 'IF(F[r]=0,0,E[r]/F[r])' $m) (Get-StyleId $st -border $true -h 'center' -v 'center' -nf 9) 'f' 0
         Put-Cell $ws $r 8 (Sub-Tok $fBar $m) (Get-StyleId $st -color '2E75B6' -border $true -h 'left' -v 'center' -name 'Consolas') 'f' $barCached 's'
         Put-Cell $ws $r 9 (Sub-Tok 'F[r]-E[r]' $m) $base 'f' $nItems
+        Put-Cell $ws $r 10 (Sub-Tok $fEstP $m) $hrsStyle 'f' $phEst[$i - 1]
+        Put-Cell $ws $r 11 (Sub-Tok $fActP $m) $hrsStyle 'f' 0
+        Put-Cell $ws $r 12 (Sub-Tok $fLeftP $m) $hrsStyle 'f' $phEst[$i - 1]
     }
-    $lastRow = 8 + $phases.Count
-    Put-Cell $ws ($lastRow + 1) 2 'RAG per phase: Red if any item is Red or Blocked, Amber if any is Amber, otherwise Green once the phase has started.' (Get-StyleId $st -sz 9 -i $true -color '595959')
+    # Totals row
+    $totStyle = Get-StyleId $st -b $true -fill $STEP_A -border $true -h 'center' -v 'center'
+    $totHrs = Get-StyleId $st -b $true -fill $STEP_A -border $true -h 'center' -v 'center' -nf 166
+    Put-Cell $ws $totRow 1 $null $totStyle
+    Put-Cell $ws $totRow 2 'Total' (Get-StyleId $st -b $true -fill $STEP_A -border $true -h 'left' -v 'center')
+    for ($c = 3; $c -le 9; $c++) { Put-Cell $ws $totRow $c $null $totStyle }
+    Put-Cell $ws $totRow 10 ('SUM(J9:J' + $lastRow + ')') $totHrs 'f' $totalEst
+    Put-Cell $ws $totRow 11 ('SUM(K9:K' + $lastRow + ')') $totHrs 'f' 0
+    Put-Cell $ws $totRow 12 ('SUM(L9:L' + $lastRow + ')') $totHrs 'f' $totalEst
+    $ws.RowH[$totRow] = 19.5
+    $fCal = 'IF(SUMIFS([E],[S],"Complete",[K],">0")=0,"Calibration: no completed items with actual times yet.","Calibration: completed items with actual times took "&TEXT(SUMIFS([K],[S],"Complete",[K],">0")/SUMIFS([E],[S],"Complete",[K],">0"),"0%")&" of their estimate so far. Adjust the Sizing tab hours for the next environment.")'
+    $mc = @{ '[E]' = $colE; '[S]' = $colS; '[K]' = $colK }
+    Put-Cell $ws ($totRow + 1) 2 (Sub-Tok $fCal $mc) (Get-StyleId $st -sz 9 -i $true -color '595959') 'f' 'Calibration: no completed items with actual times yet.' 's'
+    Put-Cell $ws ($totRow + 2) 2 'RAG per phase: Red if any item is Red or Blocked, Amber if any is Amber, otherwise Green once the phase has started.' (Get-StyleId $st -sz 9 -i $true -color '595959')
+    Put-Cell $ws ($totRow + 3) 2 'Hours are estimates from the Sizing tab (starting values, not measured timings) and are not a commitment.' (Get-StyleId $st -sz 9 -i $true -color '595959')
     Add-Cf $ws ('C9:C' + $lastRow) @( @('equal', '"Complete"', $dComplete), @('equal', '"In progress"', $dInProg), @('equal', '"Blocked"', $dBlocked), @('equal', '"Not started"', $dNotStarted) )
     Add-Cf $ws ('D9:D' + $lastRow) $rag
-    foreach ($cd in @(@(1,1,5), @(2,2,42), @(3,3,14), @(4,4,10), @(5,6,8), @(7,7,9), @(8,8,26), @(9,9,11), @(10,10,3))) { [void]$ws.Cols.Add($cd) }
+    foreach ($cd in @(@(1,1,5), @(2,2,42), @(3,3,14), @(4,4,10), @(5,6,8), @(7,7,9), @(8,8,26), @(9,9,11), @(10,12,10))) { [void]$ws.Cols.Add($cd) }
+
+    # ------------------------------------------------------------ Sizing
+    $ws = $siz
+    Put-Cell $ws 1 1 'Sizing and time estimates' (Get-StyleId $st -sz 14 -b $true)
+    Put-Cell $ws 2 1 'Enter the size of this environment in the yellow cells. Each tracker row looks up its Estimate basis in the table below: hours = fixed hours + (hours per unit x number of units).' (Get-StyleId $st -i $true -color '595959')
+    Put-Cell $ws 3 1 'The hours below are starting values, not measured timings. Replace them with your own, and use the calibration line on the Dashboard after the first environment.' (Get-StyleId $st -i $true -color '595959')
+    $inLabels = @('ESX hosts', 'Clusters', 'vCenter Servers', 'NSX Edge nodes')
+    $inCached = @(4, 1, 1, 2)
+    for ($i = 0; $i -lt 4; $i++) {
+        Put-Cell $ws (4 + $i) 1 $inLabels[$i] (Get-StyleId $st -b $true -border $true)
+        Put-Cell $ws (4 + $i) 2 $inCached[$i] (Get-StyleId $st -fill $INPUT -border $true -h 'center') 'n'
+    }
+    Put-Cell $ws 8 1 'Example values are filled in. Replace them with the numbers for this environment.' (Get-StyleId $st -sz 9 -i $true -color '595959')
+    $sh = @('Estimate basis', 'Fixed hrs', 'Per ESX host', 'Per cluster', 'Per vCenter', 'Per Edge node', 'What it covers')
+    for ($c = 1; $c -le $sh.Count; $c++) {
+        Put-Cell $ws 12 $c $sh[$c - 1] (Get-StyleId $st -b $true -color 'FFFFFF' -fill $NAVY -border $true -h 'center' -v 'center' -wrap $true)
+    }
+    $ws.RowH[12] = 24
+    $unitStyle = Get-StyleId $st -b $true -fill $STEP_A -border $true -h 'center'
+    Put-Cell $ws 13 1 'Units in this environment' (Get-StyleId $st -b $true -fill $STEP_A -border $true)
+    Put-Cell $ws 13 2 1 $unitStyle 'n'
+    Put-Cell $ws 13 3 '$B$4' $unitStyle 'f' 4
+    Put-Cell $ws 13 4 '$B$5' $unitStyle 'f' 1
+    Put-Cell $ws 13 5 '$B$6' $unitStyle 'f' 1
+    Put-Cell $ws 13 6 '$B$7' $unitStyle 'f' 2
+    Put-Cell $ws 13 7 $null (Get-StyleId $st -fill $STEP_A -border $true)
+    for ($k = 0; $k -lt 12; $k++) {
+        $rr = 14 + $k
+        $ru = $null; if ($k -lt $rules.Count) { $ru = $rules[$k] }
+        $sidT = Get-StyleId $st -fill $INPUT -border $true
+        $sidN = Get-StyleId $st -fill $INPUT -border $true -h 'center'
+        if ($null -ne $ru) {
+            Put-Cell $ws $rr 1 $ru.N $sidT
+            for ($u = 0; $u -lt 5; $u++) { Put-Cell $ws $rr (2 + $u) ([double]$ru.V[$u]) $sidN 'n' }
+            Put-Cell $ws $rr 7 $ru.C $sidT
+        } else {
+            for ($c = 1; $c -le 7; $c++) { Put-Cell $ws $rr $c $null $sidT }
+        }
+    }
+    Put-Cell $ws 27 1 'Add your own estimate bases in the empty yellow rows; they appear in the Estimate basis dropdown on the tracker.' (Get-StyleId $st -sz 9 -i $true -color '595959')
+    foreach ($cd in @(@(1,1,30), @(2,6,14), @(7,7,52))) { [void]$ws.Cols.Add($cd) }
 
     # ------------------------------------------------------------ Issues Log
     $ws = $iss
@@ -915,21 +1053,22 @@ function Build-Workbook([string]$title, $phases, [string]$sourceName, [string]$o
     Add-Cf $ws ('E5:E' + $ISS_LAST) $rag
 
     # ------------------------------------------------------------ package
-    $sheets = @($dash, $trk, $iss)
+    $sheets = @($dash, $trk, $siz, $iss)
+    $ns = $sheets.Count
     $ct = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
     $ct += '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/>'
     $ct += '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
-    for ($i = 1; $i -le 3; $i++) { $ct += '<Override PartName="/xl/worksheets/sheet' + $i + '.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>' }
+    for ($i = 1; $i -le $ns; $i++) { $ct += '<Override PartName="/xl/worksheets/sheet' + $i + '.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>' }
     $ct += '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>'
     $rels = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
     $rels += '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>'
     $wbx = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
     $wbx += '<bookViews><workbookView activeTab="0"/></bookViews><sheets>'
-    for ($i = 1; $i -le 3; $i++) { $wbx += '<sheet name="' + (Esc-Xml $sheets[$i - 1].Name) + '" sheetId="' + $i + '" r:id="rId' + $i + '"/>' }
+    for ($i = 1; $i -le $ns; $i++) { $wbx += '<sheet name="' + (Esc-Xml $sheets[$i - 1].Name) + '" sheetId="' + $i + '" r:id="rId' + $i + '"/>' }
     $wbx += '</sheets><calcPr calcId="191029" fullCalcOnLoad="1"/></workbook>'
     $wrels = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
-    for ($i = 1; $i -le 3; $i++) { $wrels += '<Relationship Id="rId' + $i + '" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet' + $i + '.xml"/>' }
-    $wrels += '<Relationship Id="rId4" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>'
+    for ($i = 1; $i -le $ns; $i++) { $wrels += '<Relationship Id="rId' + $i + '" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet' + $i + '.xml"/>' }
+    $wrels += '<Relationship Id="rId' + ($ns + 1) + '" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>'
 
     $parts = New-Object System.Collections.ArrayList
     [void]$parts.Add(@{ Name = '[Content_Types].xml';        Text = $ct })
@@ -937,7 +1076,7 @@ function Build-Workbook([string]$title, $phases, [string]$sourceName, [string]$o
     [void]$parts.Add(@{ Name = 'xl/workbook.xml';            Text = $wbx })
     [void]$parts.Add(@{ Name = 'xl/_rels/workbook.xml.rels'; Text = $wrels })
     [void]$parts.Add(@{ Name = 'xl/styles.xml';              Text = (Get-StylesXml $st) })
-    for ($i = 1; $i -le 3; $i++) { [void]$parts.Add(@{ Name = ('xl/worksheets/sheet' + $i + '.xml'); Text = (Get-SheetXml $sheets[$i - 1]) }) }
+    for ($i = 1; $i -le $ns; $i++) { [void]$parts.Add(@{ Name = ('xl/worksheets/sheet' + $i + '.xml'); Text = (Get-SheetXml $sheets[$i - 1]) }) }
     Write-Zip $outPath $parts
 }
 
@@ -946,7 +1085,7 @@ function Test-Xlsx([string]$path) {
     $zip = Open-ZipRead $path
     try {
         $need = @('[Content_Types].xml', '_rels/.rels', 'xl/workbook.xml', 'xl/_rels/workbook.xml.rels', 'xl/styles.xml',
-                  'xl/worksheets/sheet1.xml', 'xl/worksheets/sheet2.xml', 'xl/worksheets/sheet3.xml')
+                  'xl/worksheets/sheet1.xml', 'xl/worksheets/sheet2.xml', 'xl/worksheets/sheet3.xml', 'xl/worksheets/sheet4.xml')
         foreach ($n in $need) {
             $txt = Read-ZipText $zip $n
             if ($null -eq $txt) { throw ('Self-check failed: ' + $n + ' is missing from the workbook.') }

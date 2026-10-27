@@ -46,6 +46,20 @@ If neither is found, the error lists the first row of every table in the documen
 
 The Dashboard recalculates from the Tracker and Issues Log tabs. Nothing to type on it.
 
+## Time estimates (PowerShell version)
+
+The tracker has an **Est. (hrs)** column and an **Actual (hrs)** column, and a **Sizing** tab behind them.
+
+1. On the Sizing tab, type the size of the environment: ESX hosts, clusters, vCenter Servers and NSX Edge nodes.
+2. Each tracker row has an **Estimate basis** (a dropdown, for example "ESX host upgrade" or "Appliance deploy"). The hours are the fixed hours for that basis plus the hours per unit multiplied by the number of units. A 12-host site gets more ESX upgrade time than a 4-host site without anyone retyping anything.
+3. To override one task, type a number over the formula in Est. (hrs). To change what a type of task costs, edit the table on the Sizing tab.
+4. Actual (hrs) is worked out from Actual start and Actual end.
+5. The Dashboard shows estimated, actual and remaining hours for each phase, and a calibration line once some items are complete with actual times, for example "completed items took 133% of their estimate". Use that to correct the Sizing table before the next environment.
+
+The script picks each row's estimate basis from keywords in the task text (for example "Upgrade ESX hosts" or "Deploy the appliance"), so some rows will be wrong. The hours in the Sizing table are starting values, not measured timings. Replace them with your own.
+
+This is in the PowerShell version only. The Python version does not have it.
+
 ## If it will not run
 
 - **"Running scripts is disabled" or similar.** The launchers already pass `-ExecutionPolicy Bypass`. If a company policy still blocks it, try this from a cmd prompt, which reads the script as text instead of running it as a file:
