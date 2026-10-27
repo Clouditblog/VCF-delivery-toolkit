@@ -1,0 +1,169 @@
+{
+  "_comment": "Targets are VCF 9.1 and VVF 9.1 only. Rules last checked against Broadcom sources on 2026-09-29. Re-check before customer use.",
+  "rulesChecked": "2026-09-29",
+  "sources": [
+    {
+      "title": "CPU Support Deprecation and Discontinuation in VCF Releases (KB 318697)",
+      "url": "https://knowledge.broadcom.com/external/article/318697/cpu-support-deprecation-and-discontinuat.html"
+    },
+    {
+      "title": "VCF 9.1 - Demystifying Supported Upgrade Paths to 9.1 (William Lam)",
+      "url": "https://williamlam.com/2026/05/vcf-9-1-demystifying-supported-upgrade-paths-to-9-1.html"
+    },
+    {
+      "title": "Upgrade path from vSphere 8.x to VVF 9 or VCF 9 (KB 437250)",
+      "url": "https://knowledge.broadcom.com/external/article/437250/upgrade-path-from-vsphere-8x-to-vmware.html"
+    },
+    {
+      "title": "What's New with vSphere in VCF 9.0",
+      "url": "https://blogs.vmware.com/cloud-foundation/2025/06/23/vsphere-in-vcf-9-0-whats-new/"
+    },
+    {
+      "title": "Broadcom Compatibility Guide",
+      "url": "https://compatibilityguide.broadcom.com/"
+    }
+  ],
+  "targets": {
+    "VCF 9.1": {
+      "family": "VCF",
+      "esxiMajor": 9,
+      "minSourceEsxi": "8.0",
+      "hwVersion": 22,
+      "minHwAdvisory": 13,
+      "perCoreLicensing": true,
+      "cpuRules": "vcf9",
+      "notes": [
+        "Supported sources for 9.1: vSphere 8.x (with Aria Operations 8.x, optionally NSX 4.x and Aria Automation 8.x) and VCF 5.x.",
+        "vSphere 8.x reaches end of support in October 2027.",
+        "Baseline-managed (VUM) clusters are not supported in vSphere 9. Host Profiles are deprecated.",
+        "Licensing moves from 25-character keys to subscription licence files."
+      ]
+    },
+    "VVF 9.1": {
+      "family": "VVF",
+      "esxiMajor": 9,
+      "minSourceEsxi": "8.0",
+      "hwVersion": 22,
+      "minHwAdvisory": 13,
+      "perCoreLicensing": true,
+      "cpuRules": "vcf9",
+      "notes": [
+        "VVF 9.1 uses the same ESX 9.x CPU and hardware rules as VCF 9.1.",
+        "VVF has a smaller entitlement than VCF. Confirm whether NSX, VCF Automation and other selected features are included in the VVF subscription before planning them.",
+        "vSphere 8.x reaches end of support in October 2027.",
+        "Baseline-managed (VUM) clusters are not supported in vSphere 9. Host Profiles are deprecated.",
+        "Licensing moves from 25-character keys to subscription licence files."
+      ]
+    }
+  },
+  "cpuRuleSets": {
+    "vcf9": [
+      {
+        "status": "Blocker",
+        "family": "Broadwell-DE (Xeon D-1500)",
+        "pattern": "D-15\\d\\d",
+        "note": "Discontinued: installation is blocked on ESX 9.x (KB 318697)."
+      },
+      {
+        "status": "Blocker",
+        "family": "Broadwell-EP/EX (E5 v4, E7 v4)",
+        "pattern": "E5-(16|26|46)\\d\\d\\s*v4|E7-[248]8\\d\\d\\s*v4",
+        "note": "Discontinued: installation is blocked on ESX 9.x (KB 318697)."
+      },
+      {
+        "status": "Blocker",
+        "family": "Kaby Lake-S (Xeon E3-1200)",
+        "pattern": "E3-12\\d\\d",
+        "note": "Discontinued: installation is blocked on ESX 9.x (KB 318697)."
+      },
+      {
+        "status": "Blocker",
+        "family": "Skylake-W (Xeon W-2100)",
+        "pattern": "\\bW-21\\d\\d",
+        "note": "Discontinued: installation is blocked on ESX 9.x (KB 318697)."
+      },
+      {
+        "status": "Blocker",
+        "family": "Older than Broadwell",
+        "pattern": "E5-\\d{4}\\s*(v[123]\\b|@)|E7-\\d{4}\\s*(v[123]\\b|@)|\\b[XEL]5\\d{3}\\b|Opteron",
+        "note": "Older than Broadwell. Not supported on ESX 9.x (inferred: Broadwell-EP is already discontinued)."
+      },
+      {
+        "status": "Warning",
+        "family": "Skylake-SP (Xeon Scalable 1st gen)",
+        "pattern": "(Platinum|Gold|Silver|Bronze)\\s*(81|61|51|41|31)\\d\\d(?!\\d)|\\bD-21\\d\\d",
+        "note": "Conditional support on ESX 9.x. Check KB 428874 and the HCL entry for the exact server."
+      },
+      {
+        "status": "Warning",
+        "family": "Cascade Lake (Xeon Scalable 2nd gen)",
+        "pattern": "(Platinum|Gold|Silver|Bronze)\\s*(82|62|52|42|32)\\d\\d(?!\\d)",
+        "note": "Deprecated: installer warns the CPU may not be supported in future VCF releases."
+      },
+      {
+        "status": "Warning",
+        "family": "Coffee Lake (Xeon E-2100/E-2200)",
+        "pattern": "\\bE-2[12]\\d\\d",
+        "note": "Deprecated: installer warns the CPU may not be supported in future VCF releases."
+      },
+      {
+        "status": "Warning",
+        "family": "Atom C3000 (Denverton)",
+        "pattern": "\\bC3\\d\\d\\d\\b",
+        "note": "Deprecated: installer warns the CPU may not be supported in future VCF releases."
+      },
+      {
+        "status": "Warning",
+        "family": "AMD EPYC 7001 (Naples)",
+        "pattern": "EPYC\\s*7\\d\\d1P?\\b",
+        "note": "Deprecated: installer warns the CPU may not be supported in future VCF releases."
+      },
+      {
+        "status": "Warning",
+        "family": "AMD EPYC 7002 (Rome)",
+        "pattern": "EPYC\\s*7(\\d\\d2P?|F\\d2)\\b",
+        "note": "Deprecated: installer warns the CPU may not be supported in future VCF releases."
+      },
+      {
+        "status": "OK",
+        "family": "Ice Lake or newer / EPYC 7003 or newer",
+        "pattern": "(Platinum|Gold|Silver|Bronze)\\s*(8[3-9]|6[3-9]|5[3-9]|4[3-9]|3[3-9])\\d\\d|EPYC\\s*(7\\d\\d3|9\\d\\d\\d|4\\d\\d\\d)",
+        "note": "Not on the discontinued or deprecated lists (KB 318697). Confirm the server model on the HCL."
+      }
+    ],
+    "none": []
+  },
+  "guestOsEndOfSupport": "Windows Server 2003|Windows Server 2008|Windows Server 2012|Windows XP|Windows Vista|Windows 7\\b|Windows 8\\b|Red Hat Enterprise Linux [3-6]\\b|CentOS [3-6]\\b|SUSE Linux Enterprise (Server )?(9|10|11)\\b|Ubuntu Linux \\(?(1[0-6])",
+  "features": {
+    "vSAN": [
+      "Confirm each host model, NIC, storage controller and disk firmware on the vSAN HCL for the target release.",
+      "Clear any resync or health alarms before starting.",
+      "Check whether the cluster is OSA or ESA and plan the disk format upgrade separately."
+    ],
+    "NSX": [
+      "NSX 4.x is a supported source for the VCF 9.1 upgrade path. NSX for vSphere (NSX-V) has no direct path and needs migrating first.",
+      "Check Edge and Transport Node hardware and NIC support.",
+      "Plan the NSX upgrade order against the vCenter and ESX order in the Broadcom upgrade sequence KB."
+    ],
+    "VCF Operations": [
+      "Aria Operations 8.x is a supported source for the 9.1 path. Confirm the exact 8.x build.",
+      "Plan for VCF Operations fleet management and the new licensing model."
+    ],
+    "VCF Automation": [
+      "Aria Automation 8.x has a supported source path to 9.1. Confirm the exact 8.x build and any custom content.",
+      "Inventory blueprints, extensibility and integrations before starting."
+    ],
+    "vSphere Kubernetes Service": [
+      "Check Supervisor and workload cluster versions against the Broadcom interoperability matrix for the target.",
+      "Confirm load balancer and networking choice (NSX or VDS with external LB)."
+    ]
+  },
+  "manualChecks": [
+    "RVTools does not show lifecycle method. Confirm every cluster uses vSphere Lifecycle Manager images, not baselines (VUM baselines are not supported in vSphere 9).",
+    "RVTools does not show Host Profile use. Host Profiles are deprecated in VCF 9.0. Plan a move to vSphere Configuration Profiles.",
+    "If the source is VCF 5.x, upgrade via SDDC Manager on the supported path rather than treating it as plain vSphere.",
+    "Check third-party products (backup, monitoring, storage plugins, security agents) for support on vSphere 9.",
+    "Check the exact HBA, NIC and firmware combinations for every host model. RVTools does not capture firmware.",
+    "Confirm licence files for the target subscription before any upgrade window."
+  ]
+}
