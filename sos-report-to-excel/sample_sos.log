@@ -1,0 +1,18 @@
+Welcome to Supportability and Serviceability(SoS) utility!
+Health Check : /var/log/vmware/vcf/sddc-support/healthcheck-2026-08-01
+NTP
++-----+-----------------------------------------+------------+-------+
+| SL# | Area                                    | Title      | State |
++-----+-----------------------------------------+------------+-------+
+| 1   | ESXi : esxi-1.vrack.vsphere.local        | ESX Time   | GREEN |
+| 2   | ESXi : esxi-2.vrack.vsphere.local        | ESX Time   | YELLOW |
+| 3   | vCenter : vcenter-1.vrack.vsphere.local   | NTP Status | GREEN |
++-----+-----------------------------------------+------------+-------+
+
+Password Check
++-----+---------------------------+----------+--------------+--------------+----------+-------+
+| SL# | Area                      | User     | Expiry Date  | Last Change  | Days Left| State |
++-----+---------------------------+----------+--------------+--------------+----------+-------+
+| 1   | Workspace ONE Access      | sshuser  | Mar 19, 2027 | May 18, 2026 | 200      | GREEN |
+| 2   | SDDC Manager              | root     | Jan 01, 2026 | Jul 01, 2025 | -30      | RED   |
++-----+---------------------------+----------+--------------+--------------+----------+-------+
