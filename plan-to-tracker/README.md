@@ -40,6 +40,10 @@ An existing tracker is never overwritten, because the team will have been fillin
 - Actions that start with "Validate" become Checkpoints
 - Required = No is marked "(optional)"
 
+If the document has no Execution Plan tables (for example a procedure exported from Broadcom's documentation), the script falls back to the numbered steps: one phase per main heading, one row per top-level numbered step, with the number of sub-steps in the Notes column. Bullets are ignored, and a main heading with no numbered steps becomes a single "Complete: ..." row. The console says when this happened. Check the rows over before using them, because the source steps are written for a person following the document, not for tracking.
+
+If neither is found, the error lists the first row of every table in the document, which shows what the script saw.
+
 The Dashboard recalculates from the Tracker and Issues Log tabs. Nothing to type on it.
 
 ## If it will not run
@@ -53,4 +57,4 @@ The Dashboard recalculates from the Tracker and Issues Log tabs. Nothing to type
 
 ## Tested
 
-The PowerShell script was run on PowerShell 7 on Linux against a real plan. Its workbook matches the Python version cell for cell, and recalculates with no formula errors. It has not been run on Windows PowerShell 5.1 or opened in desktop Excel yet.
+The PowerShell script was run on PowerShell 7 on Linux against a real plan and a Broadcom procedure export. Its workbook matches the Python version cell for cell, and recalculates with no formula errors. It has not been run on Windows PowerShell 5.1 or opened in desktop Excel yet.

@@ -174,6 +174,121 @@ function Get-RowCells($tr, $nsm) {
     return ,$cells
 }
 
+function Get-NumberFormats($numText) {
+    # Maps "numId|ilvl" to the numbering format (decimal, bullet, ...), so bullets are not mistaken for steps.
+    $map = @{}
+    if (-not $numText) { return $map }
+    $nd = New-Object System.Xml.XmlDocument
+    $nd.LoadXml($numText)
+    $nn = New-Object System.Xml.XmlNamespaceManager($nd.NameTable)
+    $nn.AddNamespace('w', $script:NsW)
+    $abs = @{}
+    foreach ($a in $nd.SelectNodes('//w:abstractNum', $nn)) {
+        $aid = $a.GetAttribute('abstractNumId', $script:NsW)
+        foreach ($lv in $a.SelectNodes('w:lvl', $nn)) {
+            $f = $lv.SelectSingleNode('w:numFmt', $nn)
+            if ($null -ne $f) { $abs[$aid + '|' + $lv.GetAttribute('ilvl', $script:NsW)] = $f.GetAttribute('val', $script:NsW) }
+        }
+    }
+    foreach ($n in $nd.SelectNodes('//w:num', $nn)) {
+        $nid = $n.GetAttribute('numId', $script:NsW)
+        $ab = $n.SelectSingleNode('w:abstractNumId', $nn)
+        if ($null -eq $ab) { continue }
+        $aid = $ab.GetAttribute('val', $script:NsW)
+        for ($l = 0; $l -le 8; $l++) {
+            $k = $aid + '|' + $l
+            if ($abs.ContainsKey($k)) { $map[$nid + '|' + $l] = $abs[$k] }
+        }
+    }
+    return $map
+}
+
+function Get-StepItems([string]$secName, $recs, [bool]$isTop) {
+    # recs: Kind (num / lit / plain), Lvl, Text. Top-level steps become rows; deeper ones are counted as sub-steps.
+    $minLvl = 99
+    foreach ($r in $recs) { if ($r.Kind -eq 'num' -and $r.Lvl -lt $minLvl) { $minLvl = $r.Lvl } }
+    $items = New-Object System.Collections.ArrayList
+    $inLit = $false
+    foreach ($r in $recs) {
+        if ($r.Kind -eq 'lit') {
+            [void]$items.Add(@{ Text = $r.Text; Subs = 0 }); $inLit = $true
+        } elseif ($r.Kind -eq 'num') {
+            if ($items.Count -gt 0 -and ($inLit -or $r.Lvl -gt $minLvl)) { $items[$items.Count - 1].Subs++ }
+            else { [void]$items.Add(@{ Text = $r.Text; Subs = 0 }); $inLit = $false }
+        }
+    }
+    $out = New-Object System.Collections.ArrayList
+    foreach ($it in $items) {
+        $txt = $it.Text.TrimEnd(':').Trim()
+        if (-not $txt) { continue }
+        if ($txt.Length -gt 200) {
+            $cut = $txt.Substring(0, 200)
+            $sp = $cut.LastIndexOf(' ')
+            if ($sp -gt 120) { $cut = $cut.Substring(0, $sp) }
+            $txt = $cut + ' ...'
+        }
+        $kind = 'Task'
+        if ($txt -match '^(?i)(validate|verify|confirm|check)\b') { $kind = 'Checkpoint' }
+        $note = $secName
+        if ($it.Subs -gt 0) { $note += '. ' + $it.Subs + ' sub-steps in the source document' }
+        [void]$out.Add(@{ Kind = $kind; Text = $txt; Note = $note })
+    }
+    if ($out.Count -eq 0 -and $isTop) {
+        [void]$out.Add(@{ Kind = 'Task'; Text = ('Complete: ' + $secName); Note = $secName })
+    }
+    return ,$out
+}
+
+function Read-ProcedurePlan($body, $nsm, $styleMap, $numFmt) {
+    # For procedure documents (for example a Broadcom export) that have no Execution Plan tables:
+    # one phase per main heading, one row per top-level numbered step.
+    $phases = New-Object System.Collections.ArrayList
+    $secName = $null; $secTop = $false
+    $recs = New-Object System.Collections.ArrayList
+    $flush = {
+        if ($null -ne $secName) {
+            $its = Get-StepItems $secName $recs $secTop
+            if ($its.Count -gt 0) { [void]$phases.Add(@{ Name = $secName; Items = $its }) }
+        }
+    }
+    foreach ($child in $body.ChildNodes) {
+        if ($child.NodeType -ne 'Element' -or $child.LocalName -ne 'p') { continue }
+        $text = Get-ParaText $child $nsm
+        if (-not $text) { continue }
+        $style = (Get-StyleName $child $nsm $styleMap).ToLower()
+        if ($style.StartsWith('heading')) {
+            # Headings that contain a tab are table header lines, not section titles.
+            if ($null -ne $child.SelectSingleNode('.//w:tab', $nsm)) { continue }
+            & $flush
+            $secName = $text; $secTop = ($style -match '1$')
+            $recs = New-Object System.Collections.ArrayList
+            continue
+        }
+        if ($null -eq $secName) { continue }
+        $numPr = $child.SelectSingleNode('w:pPr/w:numPr', $nsm)
+        $isNum = $false; $lvl = 0
+        if ($null -ne $numPr) {
+            $idn = $numPr.SelectSingleNode('w:numId', $nsm)
+            $ln = $numPr.SelectSingleNode('w:ilvl', $nsm)
+            if ($null -ne $ln) { $lvl = [int]$ln.GetAttribute('val', $script:NsW) }
+            $nid = ''; if ($null -ne $idn) { $nid = $idn.GetAttribute('val', $script:NsW) }
+            if ($nid -ne '' -and $nid -ne '0') {
+                $isNum = $true
+                $k = $nid + '|' + $lvl
+                if ($numFmt.ContainsKey($k) -and $numFmt[$k] -eq 'bullet') { $isNum = $false }
+            }
+        }
+        $clean = Strip-See $text
+        if ($isNum) {
+            if ($clean) { [void]$recs.Add(@{ Kind = 'num'; Lvl = $lvl; Text = $clean }) }
+        } elseif ($text -match '^\d+\.\s+\S') {
+            [void]$recs.Add(@{ Kind = 'lit'; Lvl = 0; Text = (Strip-See ([regex]::Replace($text, '^\d+\.\s*', ''))) })
+        }
+    }
+    & $flush
+    return ,$phases
+}
+
 function Read-Plan([string]$path) {
     $zip = $null
     try {
@@ -188,6 +303,7 @@ function Read-Plan([string]$path) {
     try {
         $docText = Read-ZipText $zip 'word/document.xml'
         $styText = Read-ZipText $zip 'word/styles.xml'
+        $numText = Read-ZipText $zip 'word/numbering.xml'
     } finally {
         $zip.Dispose()
     }
@@ -231,6 +347,8 @@ function Read-Plan([string]$path) {
     $reqItems  = New-Object System.Collections.ArrayList
     $phases    = New-Object System.Collections.ArrayList
     $rxOptional = New-Object System.Text.RegularExpressions.Regex('\.?\s*$')
+    $tableNo = 0
+    $tableHeads = New-Object System.Collections.ArrayList
 
     foreach ($child in $body.ChildNodes) {
         if ($child.NodeType -ne 'Element') { continue }
@@ -250,9 +368,12 @@ function Read-Plan([string]$path) {
         if ($tag -ne 'tbl') { continue }
 
         $rows = @($child.SelectNodes('w:tr', $nsm))
+        $tableNo++
         if ($rows.Count -eq 0) { continue }
         $head = (Get-RowCells $rows[0] $nsm)
         $nonblank = @($head | Where-Object { $_ -ne '' })
+        $seen = ('Table ' + $tableNo + ' (' + $rows.Count + ' rows): ' + (($head | ForEach-Object { if ($_.Length -gt 30) { $_.Substring(0, 30) } else { $_ } }) -join ' | '))
+        [void]$tableHeads.Add($seen)
 
         # Execution plan tables
         if ($head.Count -ge 4 -and $head[0].ToLower() -eq 'action' -and $head[1].ToLower().StartsWith('impact')) {
@@ -317,11 +438,20 @@ function Read-Plan([string]$path) {
     }
     $hasExec = $false
     foreach ($ph in $phases) { if ($ph.Name -ne 'Preparation') { $hasExec = $true } }
+    $mode = 'plan'
     if (-not $hasExec) {
-        throw 'No execution plan table found (a table headed Action / Impact to Environment / Required / VM Downtime).'
+        $proc = Read-ProcedurePlan $body $nsm $styleMap (Get-NumberFormats $numText)
+        if ($proc.Count -eq 0) {
+            $shown = @($tableHeads | Select-Object -First 15)
+            $msg = 'No execution plan table found (a table headed Action / Impact to Environment / Required / VM Downtime), and no numbered steps under headings either.'
+            $msg += [Environment]::NewLine + 'The document has ' + $tableNo + ' tables. Their first rows are:' + [Environment]::NewLine + ($shown -join [Environment]::NewLine)
+            throw $msg
+        }
+        $phases = $proc
+        $mode = 'procedure'
     }
     if (-not $title) { $title = [System.IO.Path]::GetFileNameWithoutExtension($path) }
-    return [pscustomobject]@{ Title = $title; Phases = $phases }
+    return [pscustomobject]@{ Title = $title; Phases = $phases; Mode = $mode }
 }
 
 # ---------------------------------------------------------------------------
@@ -559,7 +689,7 @@ function Write-Zip([string]$path, $parts) {
     }
 }
 
-function Build-Workbook([string]$title, $phases, [string]$sourceName, [string]$outPath) {
+function Build-Workbook([string]$title, $phases, [string]$sourceName, [string]$outPath, [string]$mode = 'plan') {
     $st = New-StyleBook
     $lcTitle = $title.ToLower()
     if ($lcTitle.Contains('converge')) { $tracker = 'Converge Tracker' }
@@ -599,7 +729,9 @@ function Build-Workbook([string]$title, $phases, [string]$sourceName, [string]$o
     # ------------------------------------------------------------ Tracker
     $ws = $trk
     Put-Cell $ws 1 1 ($title + ': Execution Tracker') (Get-StyleId $st -sz 14 -b $true)
-    Put-Cell $ws 2 1 ('Source: ' + $sourceName + ', generated ' + $todayText + '. ' + $phases.Count + ' phases, ' + $itemsTotal + ' items. Items marked (optional) have Required = No in the plan.') (Get-StyleId $st -i $true -color '595959')
+    if ($mode -eq 'procedure') { $tail = 'One row per top-level numbered step under each main heading; sub-steps are counted in the notes.' }
+    else { $tail = 'Items marked (optional) have Required = No in the plan.' }
+    Put-Cell $ws 2 1 ('Source: ' + $sourceName + ', generated ' + $todayText + '. ' + $phases.Count + ' phases, ' + $itemsTotal + ' items. ' + $tail) (Get-StyleId $st -i $true -color '595959')
     Put-Cell $ws 3 7 'Progress summary' (Get-StyleId $st -b $true)
     $labels = @('Change reference', 'Customer / environment', 'Change owner', 'Window start', 'Window end')
     for ($i = 0; $i -lt $labels.Count; $i++) {
@@ -837,13 +969,13 @@ function Convert-Plan([string]$docxPath, [string]$outPath) {
     }
     $out = Get-UniquePath $outPath
     try {
-        Build-Workbook $plan.Title $plan.Phases ([System.IO.Path]::GetFileName($docxPath)) $out
+        Build-Workbook $plan.Title $plan.Phases ([System.IO.Path]::GetFileName($docxPath)) $out $plan.Mode
         Test-Xlsx $out
     } catch {
         if (Test-Path -LiteralPath $out) { Remove-Item -LiteralPath $out -Force -ErrorAction SilentlyContinue }
         throw
     }
-    return [pscustomobject]@{ Path = $out; Phases = $plan.Phases }
+    return [pscustomobject]@{ Path = $out; Phases = $plan.Phases; Mode = $plan.Mode }
 }
 
 function Test-Ready($fi) {
@@ -883,7 +1015,7 @@ function Process-Folder([string]$folder, [string]$outDir, [string]$doneDir, [str
             $res = Convert-Plan $fi.FullName (Join-Path $outDir ([System.IO.Path]::GetFileNameWithoutExtension($fi.Name) + ' - Tracker.xlsx'))
             Move-Item -LiteralPath $fi.FullName -Destination (Get-UniquePath (Join-Path $doneDir $fi.Name))
             $items = 0; foreach ($p in $res.Phases) { $items += $p.Items.Count }
-            Write-Host ($stamp + '  ' + $fi.Name + ' -> ' + (Split-Path -Leaf $res.Path) + '  (' + $res.Phases.Count + ' phases, ' + $items + ' items)')
+            Write-Host ($stamp + '  ' + $fi.Name + ' -> ' + (Split-Path -Leaf $res.Path) + '  (' + $res.Phases.Count + ' phases, ' + $items + ' items)' + $(if ($res.Mode -eq 'procedure') { '  [built from numbered steps]' } else { '' }))
             $count++
         } catch {
             $msg = $_.Exception.Message
@@ -931,6 +1063,7 @@ if ($Watch) {
         if ($Output) { $dest = Resolve-Full $Output }
         $res = Convert-Plan $src $dest
         Write-Host ('Built ' + $res.Path)
+        if ($res.Mode -eq 'procedure') { Write-Host 'No Execution Plan tables found, so this was built from the numbered steps under each main heading.' }
         $i = 0
         foreach ($ph in $res.Phases) { $i++; Write-Host ('  Phase ' + $i + ': ' + $ph.Name + ' (' + $ph.Items.Count + ' items)') }
     } catch {
