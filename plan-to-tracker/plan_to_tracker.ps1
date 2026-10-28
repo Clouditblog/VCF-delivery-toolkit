@@ -551,7 +551,8 @@ function Get-StylesXml($sb) {
     $g = $script:GREY
     $x = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
     $x += '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
-    $x += '<numFmts count="3"><numFmt numFmtId="164" formatCode="dd/mm/yyyy"/><numFmt numFmtId="165" formatCode="dd/mm/yyyy hh:mm"/><numFmt numFmtId="166" formatCode="0.0"/></numFmts>'
+    $x += '<numFmts count="5"><numFmt numFmtId="164" formatCode="dd/mm/yyyy"/><numFmt numFmtId="165" formatCode="dd/mm/yyyy hh:mm"/><numFmt numFmtId="166" formatCode="0.0"/>'
+    $x += '<numFmt numFmtId="167" formatCode="&quot;Window &quot;0"/><numFmt numFmtId="168" formatCode="ddd\ dd/mm/yyyy\ hh:mm"/></numFmts>'
     $x += '<fonts count="' + $sb.Fonts.Count + '">' + ($sb.Fonts -join '') + '</fonts>'
     $x += '<fills count="' + $sb.Fills.Count + '">' + ($sb.Fills -join '') + '</fills>'
     $x += '<borders count="2"><border><left/><right/><top/><bottom/><diagonal/></border>'
@@ -729,7 +730,11 @@ function Build-Workbook([string]$title, $phases, [string]$sourceName, [string]$o
 
     # Tracker columns: A Ref, B Type, C Item, D Est, E Owner, F Planned, G Status, H RAG, I Actual start, J Actual end,
     # K Actual hrs, L Notes, M Plan reference, N Estimate basis
-    $NCOL = 14
+    # O Est. start, P Est. finish, Q Window (suggested times, worked out from the Sizing tab)
+    $NCOL = 17
+    $WIN_HRS = 8.0; $WIN_RESERVE = 0.2; $WIN_USABLE = 6.4
+    $CWN = "'Change Windows'"
+    $CW_ROWS = 30
 
     # Time-estimate rules. Hours are starting values, not measured timings; the user replaces them on the Sizing tab.
     $unitsDefault = @(1, 4, 1, 1, 2)
@@ -766,6 +771,7 @@ function Build-Workbook([string]$title, $phases, [string]$sourceName, [string]$o
 
     $dash = New-Sheet 'Dashboard'
     $trk  = New-Sheet $tracker
+    $cw   = New-Sheet 'Change Windows'
     $siz  = New-Sheet 'Sizing'
     $iss  = New-Sheet 'Issues Log'
     $dash.Grid = $false
@@ -809,7 +815,18 @@ function Build-Workbook([string]$title, $phases, [string]$sourceName, [string]$o
     [void]$ws.Merges.Add('A10:F10')
     Put-Cell $ws 10 1 'Yellow cells are for you to fill in. Pick Status and RAG from the dropdowns. Green = on plan, Amber = issue being managed, Red = blocked or needs a decision. Log each issue in the Issues Log tab using the item Ref. Est. (hrs) is worked out from the Sizing tab; type over it to override. Actual (hrs) comes from the actual start and end.' (Get-StyleId $st -i $true -color '595959' -wrap $true -v 'top')
     $ws.RowH[10] = 66
-    $heads = @('Ref', 'Type', 'Item', 'Est. (hrs)', 'Owner', 'Planned date', 'Status', 'RAG', 'Actual start', 'Actual end', 'Actual (hrs)', 'Notes / issues observed', 'Plan reference', 'Estimate basis')
+    [void]$ws.Merges.Add('O10:Q10')
+    $fHint = 'IF(ISNUMBER($C$7),"","Enter Window start (C7) to see suggested start and finish times.")'
+    $hintStyle = Get-StyleId $st -i $true -color 'C00000' -wrap $true -v 'top'
+    Put-Cell $ws 10 15 $fHint $hintStyle 'f' 'Enter Window start (C7) to see suggested start and finish times.' 's'
+    Put-Cell $ws 10 16 $null $hintStyle
+    Put-Cell $ws 10 17 $null $hintStyle
+    Put-Cell $ws 3 15 'Suggested times (columns O to Q)' (Get-StyleId $st -b $true)
+    $keyNote = Get-StyleId $st -i $true -color '595959' -wrap $true -v 'top'
+    Put-Cell $ws 4 15 'Tasks run in the order listed, starting at Window start (C7). Each task takes its Est. (hrs). A task that does not fit in the hours left in a window starts the next window. Window length, reserve and weekends are set on the Sizing tab. The Change Windows tab has the full key and the suggested windows.' $keyNote
+    foreach ($kr2 in 4..8) { foreach ($kc in 15..17) { if (-not ($kr2 -eq 4 -and $kc -eq 15)) { Put-Cell $ws $kr2 $kc $null $keyNote } } }
+    [void]$ws.Merges.Add('O4:Q8')
+    $heads = @('Ref', 'Type', 'Item', 'Est. (hrs)', 'Owner', 'Planned date', 'Status', 'RAG', 'Actual start', 'Actual end', 'Actual (hrs)', 'Notes / issues observed', 'Plan reference', 'Estimate basis', 'Est. start', 'Est. finish', 'Window')
     for ($c = 1; $c -le $heads.Count; $c++) {
         Put-Cell $ws 11 $c $heads[$c - 1] (Get-StyleId $st -b $true -color 'FFFFFF' -fill $NAVY -border $true -h 'center' -v 'center' -wrap $true)
     }
@@ -818,7 +835,19 @@ function Build-Workbook([string]$title, $phases, [string]$sourceName, [string]$o
     $fEst = 'IF($N[r]="","",IFERROR(SUMPRODUCT(INDEX(Sizing!$B$14:$F$25,MATCH($N[r],Sizing!$A$14:$A$25,0),0),Sizing!$B$13:$F$13),"?"))'
     $fAct = 'IF(AND(ISNUMBER(I[r]),ISNUMBER(J[r]),J[r]>=I[r]),ROUND((J[r]-I[r])*24,2),"")'
 
+    # Suggested times. Window number: tasks fill a window in order; a task that will not fit in the hours left starts the next window.
+    $wPrev = 'MAX(1,MAX(Q$[h]:Q[q]))'
+    $wUsed = 'SUMIFS($D$[h]:$D[q],$Q$[h]:$Q[q],' + $wPrev + ')'
+    $fWin = 'IF(OR($B[r]="Step",NOT(ISNUMBER($D[r]))),"",' + $wPrev + '+IF(AND(' + $wUsed + '>0,ROUND(' + $wUsed + '+$D[r],4)>ROUND(Sizing!$F$8,4)),1,0))'
+    $fWinStart = 'IF(Sizing!$F$6="Yes",WORKDAY(INT($C$7),$Q[r]-1),INT($C$7)+$Q[r]-1)+MOD($C$7,1)'
+    $fStart = 'IF(OR($Q[r]="",NOT(ISNUMBER($C$7))),"",' + $fWinStart + '+SUMIFS($D$[h]:$D[q],$Q$[h]:$Q[q],$Q[r])/24)'
+    $fFinish = 'IF($O[r]="","",$O[r]+$D[r]/24)'
+    $winNo = 1; $winUsedSim = 0.0
+    $winHrs = New-Object System.Collections.ArrayList
+    [void]$winHrs.Add(0.0)
+
     $phEst = New-Object System.Collections.ArrayList
+    $rowInfo = @{}
     $r = $FIRST
     for ($pi = 1; $pi -le $phases.Count; $pi++) {
         $ph = $phases[$pi - 1]
@@ -830,6 +859,7 @@ function Build-Workbook([string]$title, $phases, [string]$sourceName, [string]$o
             Put-Cell $ws $r $c $vals[$c] $sid
         }
         $ws.RowH[$r] = 15
+        $rowInfo[$r] = 'step'
         $r++
         $sumEst = 0.0
         for ($ii = 1; $ii -le $ph.Items.Count; $ii++) {
@@ -837,6 +867,12 @@ function Build-Workbook([string]$title, $phases, [string]$sourceName, [string]$o
             $basis = Get-EstBasis $it.Kind $it.Text $mode
             $cachedEst = $ruleHours[$basis]
             $sumEst += [double]$cachedEst
+            if (($winUsedSim -gt 0) -and ([math]::Round($winUsedSim + [double]$cachedEst, 4) -gt [math]::Round($WIN_USABLE, 4))) {
+                $winNo++; $winUsedSim = 0.0; [void]$winHrs.Add(0.0)
+            }
+            $winUsedSim += [double]$cachedEst
+            $winHrs[$winNo - 1] = [math]::Round([double]$winHrs[$winNo - 1] + [double]$cachedEst, 2)
+            $rowInfo[$r] = $winNo
             $rm = @{ '[r]' = $r }
             for ($c = 1; $c -le $NCOL; $c++) {
                 $nfx = 0
@@ -871,7 +907,23 @@ function Build-Workbook([string]$title, $phases, [string]$sourceName, [string]$o
             else { Put-Cell $ws $rr $c $null $sid }
         }
     }
-    foreach ($cd in @(@(1,1,7), @(2,2,16), @(3,3,70), @(4,4,10), @(5,5,14), @(6,6,13), @(7,7,14), @(8,8,10), @(9,10,15), @(11,11,11), @(12,12,55), @(13,13,36), @(14,14,22))) { [void]$ws.Cols.Add($cd) }
+    # Suggested start, finish and window on every row (step and blank rows return an empty string)
+    for ($rr = $FIRST; $rr -le $LAST; $rr++) {
+        $rm = @{ '[r]' = $rr; '[q]' = ($rr - 1); '[h]' = ($FIRST - 1) }
+        $isStep = ($rowInfo.ContainsKey($rr) -and ($rowInfo[$rr] -is [string]))
+        $fillw = $null; if ($isStep) { $fillw = $STEP_B }
+        $bw = $isStep
+        $styQ = Get-StyleId $st -b $bw -fill $fillw -border $true -nf 167 -h 'center' -v 'center'
+        $styT = Get-StyleId $st -b $bw -fill $fillw -border $true -nf 168 -h 'center' -v 'center'
+        if ($rowInfo.ContainsKey($rr) -and ($rowInfo[$rr] -is [int])) {
+            Put-Cell $ws $rr 17 (Sub-Tok $fWin $rm) $styQ 'f' $rowInfo[$rr]
+        } else {
+            Put-Cell $ws $rr 17 (Sub-Tok $fWin $rm) $styQ 'f' '' 's'
+        }
+        Put-Cell $ws $rr 15 (Sub-Tok $fStart $rm) $styT 'f' '' 's'
+        Put-Cell $ws $rr 16 (Sub-Tok $fFinish $rm) $styT 'f' '' 's'
+    }
+    foreach ($cd in @(@(1,1,7), @(2,2,16), @(3,3,70), @(4,4,10), @(5,5,14), @(6,6,13), @(7,7,14), @(8,8,10), @(9,10,15), @(11,11,11), @(12,12,55), @(13,13,36), @(14,14,22), @(15,16,21), @(17,17,11))) { [void]$ws.Cols.Add($cd) }
     $ws.Freeze = @(3, 11)
     [void]$ws.Dv.Add(@(('G' + $FIRST + ':G' + $LAST), '"Not started,In progress,Complete,Blocked,Rolled back"'))
     [void]$ws.Dv.Add(@(('H' + $FIRST + ':H' + $LAST), '"Green,Amber,Red"'))
@@ -967,6 +1019,8 @@ function Build-Workbook([string]$title, $phases, [string]$sourceName, [string]$o
     Put-Cell $ws ($totRow + 1) 2 (Sub-Tok $fCal $mc) (Get-StyleId $st -sz 9 -i $true -color '595959') 'f' 'Calibration: no completed items with actual times yet.' 's'
     Put-Cell $ws ($totRow + 2) 2 'RAG per phase: Red if any item is Red or Blocked, Amber if any is Amber, otherwise Green once the phase has started.' (Get-StyleId $st -sz 9 -i $true -color '595959')
     Put-Cell $ws ($totRow + 3) 2 'Hours are estimates from the Sizing tab (starting values, not measured timings) and are not a commitment.' (Get-StyleId $st -sz 9 -i $true -color '595959')
+    $fSug = 'IF(' + $CWN + '!$C$5=0,"","Suggested change windows: "&' + $CWN + '!$C$5&IF(ISNUMBER(' + $CWN + '!$C$7)," (from "&TEXT(' + $T + '!$C$7,"ddd dd mmm yyyy hh:mm")&" to "&TEXT(' + $CWN + '!$C$7,"ddd dd mmm yyyy hh:mm")&")","")&". See the Change Windows tab.")'
+    Put-Cell $ws ($totRow + 4) 2 $fSug (Get-StyleId $st -sz 9 -i $true -color '595959') 'f' ('Suggested change windows: ' + $winNo + '. See the Change Windows tab.') 's'
     Add-Cf $ws ('C9:C' + $lastRow) @( @('equal', '"Complete"', $dComplete), @('equal', '"In progress"', $dInProg), @('equal', '"Blocked"', $dBlocked), @('equal', '"Not started"', $dNotStarted) )
     Add-Cf $ws ('D9:D' + $lastRow) $rag
     foreach ($cd in @(@(1,1,5), @(2,2,42), @(3,3,14), @(4,4,10), @(5,6,8), @(7,7,9), @(8,8,26), @(9,9,11), @(10,12,10))) { [void]$ws.Cols.Add($cd) }
@@ -982,7 +1036,27 @@ function Build-Workbook([string]$title, $phases, [string]$sourceName, [string]$o
         Put-Cell $ws (4 + $i) 1 $inLabels[$i] (Get-StyleId $st -b $true -border $true)
         Put-Cell $ws (4 + $i) 2 $inCached[$i] (Get-StyleId $st -fill $INPUT -border $true -h 'center') 'n'
     }
-    Put-Cell $ws 8 1 'Example values are filled in. Replace them with the numbers for this environment.' (Get-StyleId $st -sz 9 -i $true -color '595959')
+    Put-Cell $ws 9 1 'Example values are filled in. Replace them with the numbers for this environment.' (Get-StyleId $st -sz 9 -i $true -color '595959')
+    # Change window settings, used for the suggested start and finish times on the tracker
+    $setLab = Get-StyleId $st -b $true -border $true
+    $setIn  = Get-StyleId $st -fill $INPUT -border $true -h 'center'
+    $setInP = Get-StyleId $st -fill $INPUT -border $true -h 'center' -nf 9
+    $setCalc = Get-StyleId $st -border $true -h 'center' -nf 166
+    $setNames = @('Hours per window', 'Reserve at end of window', 'Skip weekends', 'Window length used (hrs)', 'Usable hours per window')
+    for ($i = 0; $i -lt 5; $i++) {
+        Put-Cell $ws (4 + $i) 4 $setNames[$i] $setLab
+        Put-Cell $ws (4 + $i) 5 $null $setLab
+        [void]$ws.Merges.Add('D' + (4 + $i) + ':E' + (4 + $i))
+    }
+    Put-Cell $ws 4 6 $WIN_HRS $setIn 'n'
+    Put-Cell $ws 5 6 $WIN_RESERVE $setInP 'n'
+    Put-Cell $ws 6 6 'Yes' $setIn
+    $fLen = 'IF(AND(ISNUMBER(' + $T + '!$C$7),ISNUMBER(' + $T + '!$C$8),' + $T + '!$C$8>' + $T + '!$C$7),(' + $T + '!$C$8-' + $T + '!$C$7)*24,F4)'
+    Put-Cell $ws 7 6 $fLen $setCalc 'f' $WIN_HRS
+    Put-Cell $ws 8 6 'F7*(1-F5)' $setCalc 'f' $WIN_USABLE
+    [void]$ws.Dv.Add(@('F6', '"Yes,No"'))
+    Put-Cell $ws 10 1 'Window length comes from Window start and Window end on the tracker when both are filled in, otherwise from Hours per window.' (Get-StyleId $st -sz 9 -i $true -color '595959')
+    Put-Cell $ws 11 1 'The reserve is kept free at the end of each window for overruns and validation.' (Get-StyleId $st -sz 9 -i $true -color '595959')
     $sh = @('Estimate basis', 'Fixed hrs', 'Per ESX host', 'Per cluster', 'Per vCenter', 'Per Edge node', 'What it covers')
     for ($c = 1; $c -le $sh.Count; $c++) {
         Put-Cell $ws 12 $c $sh[$c - 1] (Get-StyleId $st -b $true -color 'FFFFFF' -fill $NAVY -border $true -h 'center' -v 'center' -wrap $true)
@@ -1011,6 +1085,132 @@ function Build-Workbook([string]$title, $phases, [string]$sourceName, [string]$o
     }
     Put-Cell $ws 27 1 'Add your own estimate bases in the empty yellow rows; they appear in the Estimate basis dropdown on the tracker.' (Get-StyleId $st -sz 9 -i $true -color '595959')
     foreach ($cd in @(@(1,1,30), @(2,6,14), @(7,7,52))) { [void]$ws.Cols.Add($cd) }
+
+    # ------------------------------------------------------------ Change Windows
+    $ws = $cw
+    $rQ = $T + '!$Q$' + $FIRST + ':$Q$' + $LAST
+    $rD = $T + '!$D$' + $FIRST + ':$D$' + $LAST
+    $rA = $T + '!$A$' + $FIRST + ':$A$' + $LAST
+    $rB = $T + '!$B$' + $FIRST + ':$B$' + $LAST
+    $rP = $T + '!$P$' + $FIRST + ':$P$' + $LAST
+    $grey = '595959'
+    Put-Cell $ws 1 1 'Suggested change windows' (Get-StyleId $st -sz 14 -b $true)
+    Put-Cell $ws 2 1 ('Worked out from the order of tasks on the ' + $tracker + ' tab and their Est. (hrs). Fill in Window start on the tracker (cell C7) and the start and end times appear. Nothing to type on this page.') (Get-StyleId $st -i $true -color $grey)
+    $sumLab = Get-StyleId $st -b $true -border $true
+    $sumVal = Get-StyleId $st -b $true -border $true -h 'left'
+    $sumDt  = Get-StyleId $st -b $true -border $true -h 'left' -nf 168
+    $sumHr  = Get-StyleId $st -b $true -border $true -h 'left' -nf 166
+    $fFirst = 'IF(ISNUMBER(' + $T + '!$C$7),' + $T + '!$C$7,"Enter Window start on the tracker (C7)")'
+    $fCount = 'IF(COUNT(' + $rQ + ')=0,0,MAX(' + $rQ + '))'
+    $fTotal2 = 'SUMIFS(' + $rD + ',' + $rB + ',"<>Step")'
+    $fLast = 'IF(COUNT(' + $rP + ')=0,"",MAX(' + $rP + '))'
+    $fLong = 'COUNTIF(' + $rD + ',">"&Sizing!$F$8)'
+    $sumRows = @(
+        @(4, 'First window starts', $fFirst, $sumDt, 'Enter Window start on the tracker (C7)', 's'),
+        @(5, 'Windows needed', $fCount, $sumVal, $winNo, 'n'),
+        @(6, 'Total estimated hours', $fTotal2, $sumHr, $totalEst, 'n'),
+        @(7, 'Last task finishes', $fLast, $sumDt, '', 's'),
+        @(8, 'Tasks longer than one window', $fLong, $sumVal, 0, 'n')
+    )
+    foreach ($sr in $sumRows) {
+        $r = [int]$sr[0]
+        Put-Cell $ws $r 1 $sr[1] $sumLab
+        Put-Cell $ws $r 2 $null $sumLab
+        [void]$ws.Merges.Add('A' + $r + ':B' + $r)
+        Put-Cell $ws $r 3 $sr[2] $sr[3] 'f' $sr[4] $sr[5]
+    }
+    $wh = @('Window', 'Suggested start', 'Suggested end', 'Tasks finish by', 'Est. hrs', 'Usable hrs', 'Spare hrs', 'First task', 'Last task', 'Wording for the customer')
+    for ($c = 1; $c -le $wh.Count; $c++) {
+        Put-Cell $ws 10 $c $wh[$c - 1] (Get-StyleId $st -b $true -color 'FFFFFF' -fill $NAVY -border $true -h 'center' -v 'center' -wrap $true)
+    }
+    $ws.RowH[10] = 24
+    $cwBase = Get-StyleId $st -border $true -h 'center' -v 'center'
+    $cwDt = Get-StyleId $st -border $true -h 'center' -v 'center' -nf 168
+    $cwHr = Get-StyleId $st -border $true -h 'center' -v 'center' -nf 166
+    $cwWin = Get-StyleId $st -b $true -border $true -h 'center' -v 'center' -nf 167
+    $cwTxt = Get-StyleId $st -border $true -h 'left' -v 'center' -wrap $true
+    $fWinA = 'IF([n]<=$C$5,[n],"")'
+    $fWS = 'IF(OR($A[r]="",NOT(ISNUMBER(' + $T + '!$C$7))),"",IF(Sizing!$F$6="Yes",WORKDAY(INT(' + $T + '!$C$7),$A[r]-1),INT(' + $T + '!$C$7)+$A[r]-1)+MOD(' + $T + '!$C$7,1))'
+    $fWE = 'IF($B[r]="","",$B[r]+Sizing!$F$7/24)'
+    $fWF = 'IF($B[r]="","",$B[r]+$E[r]/24)'
+    $fWH = 'IF($A[r]="","",SUMIFS(' + $rD + ',' + $rQ + ',$A[r]))'
+    $fWU = 'IF($A[r]="","",Sizing!$F$8)'
+    $fWG = 'IF($A[r]="","",ROUND($F[r]-$E[r],2))'
+    $fW1 = 'IF($A[r]="","",INDEX(' + $rA + ',MATCH($A[r],' + $rQ + ',0)))'
+    $fW2 = 'IF($A[r]="","",INDEX(' + $rA + ',SUMPRODUCT(MAX((' + $rQ + '=$A[r])*(ROW(' + $rQ + ')-' + $FIRST + '+1)))))'
+    $fWT = 'IF($B[r]="","",TEXT($B[r],"ddd dd mmm yyyy hh:mm")&" to "&TEXT($C[r],"ddd dd mmm yyyy hh:mm")&" (tasks "&$H[r]&" to "&$I[r]&", about "&TEXT($E[r],"0.0")&" hrs)")'
+    $firstRefs = New-Object System.Collections.ArrayList
+    $lastRefs = New-Object System.Collections.ArrayList
+    for ($n = 1; $n -le $winNo; $n++) { [void]$firstRefs.Add(''); [void]$lastRefs.Add('') }
+    $simW = 1; $simU = 0.0
+    $pi2 = 0
+    foreach ($ph in $phases) {
+        $pi2++; $ii2 = 0
+        foreach ($it in $ph.Items) {
+            $ii2++
+            $hh2 = [double]$ruleHours[(Get-EstBasis $it.Kind $it.Text $mode)]
+            if (($simU -gt 0) -and ([math]::Round($simU + $hh2, 4) -gt [math]::Round($WIN_USABLE, 4))) { $simW++; $simU = 0.0 }
+            $simU += $hh2
+            if ($firstRefs[$simW - 1] -eq '') { $firstRefs[$simW - 1] = [string]$pi2 + '.' + $ii2 }
+            $lastRefs[$simW - 1] = [string]$pi2 + '.' + $ii2
+        }
+    }
+    for ($n = 1; $n -le $CW_ROWS; $n++) {
+        $r = 10 + $n
+        $m = @{ '[r]' = $r; '[n]' = $n }
+        $has = ($n -le $winNo)
+        $cA = ''; $cT = 's'; if ($has) { $cA = $n; $cT = 'n' }
+        Put-Cell $ws $r 1 (Sub-Tok $fWinA $m) $cwWin 'f' $cA $cT
+        Put-Cell $ws $r 2 (Sub-Tok $fWS $m) $cwDt 'f' '' 's'
+        Put-Cell $ws $r 3 (Sub-Tok $fWE $m) $cwDt 'f' '' 's'
+        Put-Cell $ws $r 4 (Sub-Tok $fWF $m) $cwDt 'f' '' 's'
+        if ($has) {
+            Put-Cell $ws $r 5 (Sub-Tok $fWH $m) $cwHr 'f' $winHrs[$n - 1]
+            Put-Cell $ws $r 6 (Sub-Tok $fWU $m) $cwHr 'f' $WIN_USABLE
+            Put-Cell $ws $r 7 (Sub-Tok $fWG $m) $cwHr 'f' ([math]::Round($WIN_USABLE - [double]$winHrs[$n - 1], 2))
+            Put-Cell $ws $r 8 (Sub-Tok $fW1 $m) $cwBase 'f' $firstRefs[$n - 1] 's'
+            Put-Cell $ws $r 9 (Sub-Tok $fW2 $m) $cwBase 'f' $lastRefs[$n - 1] 's'
+        } else {
+            Put-Cell $ws $r 5 (Sub-Tok $fWH $m) $cwHr 'f' '' 's'
+            Put-Cell $ws $r 6 (Sub-Tok $fWU $m) $cwHr 'f' '' 's'
+            Put-Cell $ws $r 7 (Sub-Tok $fWG $m) $cwHr 'f' '' 's'
+            Put-Cell $ws $r 8 (Sub-Tok $fW1 $m) $cwBase 'f' '' 's'
+            Put-Cell $ws $r 9 (Sub-Tok $fW2 $m) $cwBase 'f' '' 's'
+        }
+        Put-Cell $ws $r 10 (Sub-Tok $fWT $m) $cwTxt 'f' '' 's'
+    }
+    $dNeg = Add-Dxf $st 'C00000' $true
+    Add-Cf $ws ('G11:G' + (10 + $CW_ROWS)) @( ,@('lessThan', '0', $dNeg) )
+    $kr = 11 + $CW_ROWS + 1
+    $keyHead = Get-StyleId $st -b $true
+    $keyTxt = Get-StyleId $st -color '404040' -wrap $true -v 'top'
+    $keyI = Get-StyleId $st -sz 9 -i $true -color $grey -wrap $true -v 'top'
+    Put-Cell $ws $kr 1 'Key: what these times are based on' $keyHead
+    $keys = @(
+        @('Tasks run one after another in the order they appear on the tracker. Nothing is assumed to run in parallel. If two tasks can run side by side, lower one of the Est. (hrs) values.', $null, $null),
+        @('Hours per task come from Est. (hrs) on the tracker. Those come from the Sizing tab: the number of ESX hosts, clusters, vCenter Servers and NSX Edge nodes you enter there, multiplied by the hours per task type in the table. The table values are starting values, not measured timings. Change them to match your own experience.', $null, $null),
+        @('Window length', ('"Each window is "&TEXT(Sizing!$F$7,"0.#")&" hours long. "&TEXT(Sizing!$F$5,"0%")&" of it is kept free at the end for overruns and validation, so "&TEXT(Sizing!$F$8,"0.0")&" hours of tasks are planned into each window."'), ('Each window is ' + $WIN_HRS + ' hours long. 20% of it is kept free at the end for overruns and validation, so ' + $WIN_USABLE.ToString('0.0', $script:Inv) + ' hours of tasks are planned into each window.')),
+        @('A task is never split across two windows. If it does not fit in the hours left, it starts in the next window. A task longer than a whole window is counted in the Tasks longer than one window figure above and shows negative Spare hrs.', $null, $null),
+        @('Window days', ('"Windows fall on "&IF(Sizing!$F$6="Yes","consecutive working days (Monday to Friday)","consecutive calendar days")&", starting from Window start on the tracker. The start time of day is taken from Window start."'), 'Windows fall on consecutive working days (Monday to Friday), starting from Window start on the tracker. The start time of day is taken from Window start.'),
+        @('Not included: bank holidays and customer change freezes, approval and sign-off waits, data sync or backup waits outside the listed tasks, support calls, and rollback time. Check these against the customer calendar before proposing dates.', $null, $null),
+        @('These are suggestions to open the conversation with the customer. They are not a commitment. After the first environment, compare Actual (hrs) with Est. (hrs) on the Dashboard and adjust the Sizing tab.', $null, $null)
+    )
+    $kk = $kr + 1
+    foreach ($k in $keys) {
+        $text = $k[0]
+        if ($null -ne $k[1]) {
+            Put-Cell $ws $kk 1 $k[1] $keyTxt 'f' $k[2] 's'
+        } else {
+            Put-Cell $ws $kk 1 $text $keyTxt
+        }
+        for ($c = 2; $c -le 10; $c++) { Put-Cell $ws $kk $c $null $keyTxt }
+        [void]$ws.Merges.Add('A' + $kk + ':J' + $kk)
+        $ws.RowH[$kk] = 32
+        $kk++
+    }
+    Put-Cell $ws $kk 1 ('The table shows the first ' + $CW_ROWS + ' windows.') $keyI
+    foreach ($cd in @(@(1,1,10), @(2,4,24), @(5,7,10), @(8,9,10), @(10,10,78))) { [void]$ws.Cols.Add($cd) }
+    $cwWinCount = $winNo
 
     # ------------------------------------------------------------ Issues Log
     $ws = $iss
@@ -1053,7 +1253,7 @@ function Build-Workbook([string]$title, $phases, [string]$sourceName, [string]$o
     Add-Cf $ws ('E5:E' + $ISS_LAST) $rag
 
     # ------------------------------------------------------------ package
-    $sheets = @($dash, $trk, $siz, $iss)
+    $sheets = @($dash, $trk, $cw, $siz, $iss)
     $ns = $sheets.Count
     $ct = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
     $ct += '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/>'
@@ -1085,7 +1285,7 @@ function Test-Xlsx([string]$path) {
     $zip = Open-ZipRead $path
     try {
         $need = @('[Content_Types].xml', '_rels/.rels', 'xl/workbook.xml', 'xl/_rels/workbook.xml.rels', 'xl/styles.xml',
-                  'xl/worksheets/sheet1.xml', 'xl/worksheets/sheet2.xml', 'xl/worksheets/sheet3.xml', 'xl/worksheets/sheet4.xml')
+                  'xl/worksheets/sheet1.xml', 'xl/worksheets/sheet2.xml', 'xl/worksheets/sheet3.xml', 'xl/worksheets/sheet4.xml', 'xl/worksheets/sheet5.xml')
         foreach ($n in $need) {
             $txt = Read-ZipText $zip $n
             if ($null -eq $txt) { throw ('Self-check failed: ' + $n + ' is missing from the workbook.') }

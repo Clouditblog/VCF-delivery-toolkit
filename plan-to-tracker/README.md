@@ -60,6 +60,20 @@ The script picks each row's estimate basis from keywords in the task text (for e
 
 This is in the PowerShell version only. The Python version does not have it.
 
+## Suggested change window times (PowerShell version)
+
+Three more columns on the tracker (O to Q) give a suggested start, finish and window for each task, and a **Change Windows** tab turns them into windows you can put to the customer.
+
+1. Type **Window start** on the tracker (cell C7), for example Friday 19:00. Until you do, the times stay blank.
+2. Tasks are laid out one after another in tracker order, each taking its Est. (hrs).
+3. A window holds the hours set on the Sizing tab (default 8, with 20% kept free at the end). A task that does not fit in the hours left starts the next window. Tasks are never split.
+4. Next windows fall on the next working day (weekends skipped) at the same time of day. Set Skip weekends to No on the Sizing tab for consecutive days.
+5. If you fill in both Window start and Window end on the tracker, the window length is taken from them instead.
+6. The Change Windows tab lists each window with its start, end, the time its tasks finish, spare hours, first and last task, and a sentence you can paste into an email. A key on that tab states what the times are based on.
+
+Not allowed for: bank holidays, change freezes, approval waits, parallel work and rollback time. Check those against the customer calendar. The times are a starting suggestion, only as good as the hours on the Sizing tab.
+
+
 ## If it will not run
 
 - **"Running scripts is disabled" or similar.** The launchers already pass `-ExecutionPolicy Bypass`. If a company policy still blocks it, try this from a cmd prompt, which reads the script as text instead of running it as a file:
